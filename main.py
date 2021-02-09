@@ -24,7 +24,7 @@ import datetime
 import tzlocal
 import pytz
 #from pytz import timezone
-from secrets import TOKEN, SPOTIFY_USER_ID, DATABASE_LOCATION, PLAYLIST_ID
+from secrets import TOKEN, SPOTIFY_USER_ID, DATABASE_LOCATION, PLAYLIST_ID, EMAIL
 from refresh import Refresh_Access_Token
 
 
@@ -34,6 +34,7 @@ class GetHistory:
         self._spotify_user_id = SPOTIFY_USER_ID
         self._spotify_access_token = self.refresh_token()
         self.playlist_id = PLAYLIST_ID
+        self.email = EMAIL
         self.tracks = ""
         self.database_location = DATABASE_LOCATION
         self.received_songs = self.get_songs()
@@ -112,6 +113,8 @@ class GetHistory:
 
         data = self.received_songs
 
+        etl_dttm = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+
         spotify_id = []
         uri = []
         song_names = []
@@ -119,6 +122,7 @@ class GetHistory:
         played_at_list = []
         date = []
         duration = []
+        etl_time = []
 
         # Extracting only the relevant bits of data from the json object
         # https://developer.spotify.com/documentation/web-api/reference/player/get-recently-played/     
@@ -130,6 +134,7 @@ class GetHistory:
             played_at_list.append(song["played_at"])
             date.append(song["played_at"][0:10])
             duration.append(song["track"]["duration_ms"])
+            etl_time.append(etl_dttm)
 
         song_dict = {
             "spotify_id": spotify_id,
@@ -138,11 +143,13 @@ class GetHistory:
             "artist_name": artist_names,
             "played_at": played_at_list,
             #"date": date,
-            "duration_ms": duration
+            "duration_ms": duration,
+            "ETL_DTTM": etl_time
         }
 
         keys = list(song_dict.keys())
         song_df = pd.DataFrame(song_dict, columns = keys)
+        print(song_df.head())
 
         return song_df
 
@@ -152,6 +159,7 @@ class GetHistory:
 
         data = self.received_features
         features_df = pd.DataFrame.from_dict(data["audio_features"])
+        features_df['ETL_DTTM'] = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
         features_df.to_csv(r'features.csv')
 
         return features_df
@@ -165,6 +173,13 @@ class GetHistory:
         df["played_at"] = df.apply(lambda row: parse(row["played_at"]).astimezone(local_timezone), axis=1)
         df["date"] = df['played_at'].apply(lambda x: x.strftime("%Y-%m-%d"))
         print("Parsed dates and converted to local timezone.")
+
+        # Delete where date != yesterday's date
+        today = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday = (today - datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d")
+        df.drop(df.loc[df['date'] != yesterday].index, inplace=True)
+
+        print(df)
 
         df.to_csv(r'myhistory.csv')
 
@@ -194,9 +209,9 @@ class GetHistory:
 
         return df
 
-    # Load data to SQL database
-    def load(self, song_df: pd.DataFrame):
-        print("Create database to store streaming history and features...")
+    # Step 7: Load dataframe to SQL DB
+    def load_songs(self, song_df: pd.DataFrame):
+        print("Create database to store streaming history...")
 
         engine = sqlalchemy.create_engine(DATABASE_LOCATION)
         conn = sqlite3.connect("streaming_history.sqlite")
@@ -211,6 +226,7 @@ class GetHistory:
             played_at VARCHAR(200),
             duration_ms INT,
             date DATE,
+            ETL_DTTM DATETIME,
             CONSTRAINT primary_key_constraint PRIMARY KEY (played_at)
         )
         """
@@ -219,6 +235,7 @@ class GetHistory:
         print("Opened database successfully.")
 
         song_df.to_sql("streaming_history", con=engine, index=False, if_exists='append')
+        print("Appending new records...")
 
         # try:
         #     song_df.to_sql("streaming_history", con=engine, index=False, if_exists='append')
@@ -227,12 +244,55 @@ class GetHistory:
 
         conn.close()
         print("Closed database successfully.")
+    
+    # Step 8: Load features to another table in SQL DB
+    def load_features(self, features_df: pd.DataFrame):
+        print("Create database to store song features...")
+        
+        engine = sqlalchemy.create_engine(DATABASE_LOCATION)
+        conn = sqlite3.connect("streaming_history.sqlite")
+        cursor = conn.cursor()
+
+        sql_query = """
+        CREATE TABLE IF NOT EXISTS song_features(
+            danceability NUMERIC(10,4),
+            energy NUMERIC(10,4),
+            key INT,
+            loudness NUMERIC(10,4),
+            mode INT,
+            speechiness NUMERIC(10,4),
+            acousticness NUMERIC(10,4),
+            instrumentalness NUMERIC(12,4),
+            liveness NUMERIC(10,4),
+            valence NUMERIC(10,4),
+            tempo NUMERIC(10,4),
+            type VARCHAR(200),
+            id VARCHAR(200),
+            uri VARCHAR(200),
+            track_href VARCHAR(400),
+            analysis_url VARCHAR(400),
+            duration_ms INT,
+            time_signature INT,
+            ETL_DTTM DATETIME
+        )
+        """
+
+        cursor.execute(sql_query)
+        print("Opened database successfully.")
+
+        features_df.to_sql("song_features", con=engine, index=False, if_exists='append')
+        print("Appending new records...")
+
+        conn.close()
+        print("Closed database successfully.")
+
 
     # Final Step: Run ETL
     def run_ETL(self):
         #self.validate(self.extract_songs())
         #self.extract_features()
-        self.load(self.validate(self.extract_songs()))
+        self.load_songs(self.validate(self.extract_songs()))
+        self.load_features(self.extract_features())
 
 # if __name__ == '__main__':
 #     a = GetHistory()
