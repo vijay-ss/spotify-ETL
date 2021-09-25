@@ -24,7 +24,7 @@ import datetime
 import tzlocal
 import pytz
 #from pytz import timezone
-from secrets import TOKEN, SPOTIFY_USER_ID, DATABASE_LOCATION, PLAYLIST_ID, EMAIL
+from secrets import TOKEN, SPOTIFY_USER_ID, DATABASE_LOCATION, PLAYLIST_ID
 from refresh import Refresh_Access_Token
 
 
@@ -34,11 +34,11 @@ class GetHistory:
         self._spotify_user_id = SPOTIFY_USER_ID
         self._spotify_access_token = self.refresh_token()
         self.playlist_id = PLAYLIST_ID
-        self.email = EMAIL
         self.tracks = ""
         self.database_location = DATABASE_LOCATION
         self.received_songs = self.get_songs()
         self.received_features = self.get_features()
+        self.received_genres = self.get_genres()
 
     # Step 1: Refresh Spotify token
     def refresh_token(self):
@@ -107,7 +107,39 @@ class GetHistory:
 
         return response_json
 
-    # Step 4: Extract relevant track info
+    # Step 4: Get Genres
+
+    def get_genres(self):
+        print("Pulling genres based on listening history...")
+
+        get_query = "https://api.spotify.com/v1/artists"
+
+        data = self.received_songs
+
+        # Create csv list of Spotify ids
+        spotify_id = []
+
+        for ids in data["items"]:
+            spotify_id.append(ids["track"]["album"]["artists"][0]["id"])
+
+        csv_list = ','.join(spotify_id)
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {token}".format(token = self.spotify_access_token)
+        }
+
+        params = {
+            "ids": csv_list
+        }
+       
+        response = requests.get(get_query, headers=headers, params=params)
+        response_json = response.json()
+
+        return response_json
+
+    # Step 5: Extract relevant track info
     def extract_songs(self):
         print("Extracting song info from json request...")
 
@@ -123,6 +155,7 @@ class GetHistory:
         date = []
         duration = []
         etl_time = []
+        artist_uri = []
 
         # Extracting only the relevant bits of data from the json object
         # https://developer.spotify.com/documentation/web-api/reference/player/get-recently-played/     
@@ -135,6 +168,7 @@ class GetHistory:
             date.append(song["played_at"][0:10])
             duration.append(song["track"]["duration_ms"])
             etl_time.append(etl_dttm)
+            artist_uri.append(song["track"]["album"]["artists"][0]["id"])
 
         song_dict = {
             "spotify_id": spotify_id,
@@ -144,7 +178,8 @@ class GetHistory:
             "played_at": played_at_list,
             #"date": date,
             "duration_ms": duration,
-            "ETL_DTTM": etl_time
+            "ETL_DTTM": etl_time,
+            "artist_uri": artist_uri
         }
 
         keys = list(song_dict.keys())
@@ -153,18 +188,63 @@ class GetHistory:
 
         return song_df
 
-    # Step 5: Extract features
+    # Step 6: Extract features
     def extract_features(self):
         print("Extracting features info from json request...")
 
         data = self.received_features
         features_df = pd.DataFrame.from_dict(data["audio_features"])
         features_df['ETL_DTTM'] = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
-        features_df.to_csv(r'features.csv')
+        features_df.to_csv(r'features.csv', index=False)
 
         return features_df
 
-    # Step 6: Transform & validate data into usable format
+    # Extract genres
+    def extract_genres(self):
+        print("Extracting genres info from json request...")
+
+        data = self.received_genres
+
+        etl_dttm = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+
+        spotify_url = []
+        total_followers = []
+        genres = []
+        artist_id = []
+        artist_name = []
+        popularity = []
+        uri = []
+        etl_time = []
+
+        for artist in data['artists']:
+            spotify_url.append(artist['external_urls']['spotify'])
+            total_followers.append(artist['followers']['total'])
+            genres.append(artist['genres'])
+            artist_id.append(artist['id'])
+            artist_name.append(artist['name'])
+            popularity.append(artist['popularity'])
+            uri.append(artist['uri'])
+            etl_time.append(etl_dttm)
+
+        artist_dict = {
+            "spotify_url": spotify_url,
+            "total_followers": total_followers,
+            "genres": genres,
+            "artist_id": artist_id,
+            "artist_name": artist_name,
+            "popularity": popularity,
+            "uri": uri,
+            "ETL_DTTM": etl_dttm
+        }
+        
+        keys = list(artist_dict.keys())
+        genres_df = pd.DataFrame(artist_dict, columns = keys)
+        genres_df['genres'] = genres_df['genres'].astype(str)
+        genres_df.to_csv(r'genres.csv', index=False)
+
+        return genres_df
+
+    # Step 7: Transform & validate data into usable format
     def validate(self, df: pd.DataFrame) -> bool:
         print("Validating API song data...")
 
@@ -179,9 +259,7 @@ class GetHistory:
         yesterday = (today - datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d")
         df.drop(df.loc[df['date'] != yesterday].index, inplace=True)
 
-        print(df)
-
-        df.to_csv(r'myhistory.csv')
+        df.to_csv(r'myhistory.csv', index=False)
 
         # Check for empty dataframe
         if df.empty:
@@ -209,7 +287,7 @@ class GetHistory:
 
         return df
 
-    # Step 7: Load dataframe to SQL DB
+    # Step 8: Load dataframe to SQL DB
     def load_songs(self, song_df: pd.DataFrame):
         print("Create database to store streaming history...")
 
@@ -227,6 +305,7 @@ class GetHistory:
             duration_ms INT,
             date DATE,
             ETL_DTTM DATETIME,
+            artist_uri VARCHAR(200),
             CONSTRAINT primary_key_constraint PRIMARY KEY (played_at)
         )
         """
@@ -245,7 +324,7 @@ class GetHistory:
         conn.close()
         print("Closed database successfully.")
     
-    # Step 8: Load features to another table in SQL DB
+    # Step 9: Load features to another table in SQL DB
     def load_features(self, features_df: pd.DataFrame):
         print("Create database to store song features...")
         
@@ -286,6 +365,35 @@ class GetHistory:
         conn.close()
         print("Closed database successfully.")
 
+    # Step 10: Load genre info into SQL DB table
+    def load_genres(self, genres_df: pd.DataFrame):
+        print("Create database to store song genres...")
+
+        engine = sqlalchemy.create_engine(DATABASE_LOCATION)
+        conn = sqlite3.connect("streaming_history.sqlite")
+        cursor = conn.cursor()
+
+        sql_query = """
+        CREATE TABLE IF NOT EXISTS genres(
+            spotify_url VARCHAR(200),
+            total_followers INT,
+            genres VARCHAR(400),
+            artist_id VARCHAR(200),
+            artist_name VARCHAR(200),
+            popularity INT,
+            uri VARCHAR(200),
+            ETL_DTTM DATETIME
+        )
+        """
+
+        cursor.execute(sql_query)
+        print("Opened database successfully.")
+
+        genres_df.to_sql("genres", con=engine, index=False, if_exists='append')
+        print("Appending new records...")
+
+        conn.close()
+        print("Closed database successfully.")
 
     # Final Step: Run ETL
     def run_ETL(self):
@@ -293,6 +401,7 @@ class GetHistory:
         #self.extract_features()
         self.load_songs(self.validate(self.extract_songs()))
         self.load_features(self.extract_features())
+        self.load_genres(self.extract_genres())
 
 # if __name__ == '__main__':
 #     a = GetHistory()
