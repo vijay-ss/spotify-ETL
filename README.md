@@ -5,6 +5,6 @@ The main objective of this project is to develop a machine learning recommender 
 
 # Files
 - **main.py**: main python file which contains the code to fetch the data using the Spotify API
-- refresh.py: will refresh the Spotify token which expires after 60 minutes
-- pipeline.py: a simple function to execute the ETL process in main.py
+- **refresh.py**: will refresh the Spotify token which expires after 60 minutes
+- **pipeline.py**: a simple function to execute the ETL process in main.py
 
