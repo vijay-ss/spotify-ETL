@@ -1,15 +1,7 @@
 """
 TO DO:
 
-- Create a secrets file
-- Pull songs from spotify using credentials
-- Refresh the token to be used repeatedly
-- extract track info from json request
-- store tracks into a db
-- validate data and check for errors
-- create a job to run this process daily
-
-- timestamp timezone fix
+- refactor/cleanup code
 - create subclass for audio features?
 """
 
