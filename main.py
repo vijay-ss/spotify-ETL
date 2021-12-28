@@ -1,8 +1,8 @@
 """
 TO DO:
-
 - refactor/cleanup code
 - create subclass for audio features?
+- store each input variable outside the class object for scalability/reusability
 """
 
 import sqlalchemy
@@ -241,14 +241,25 @@ class GetHistory:
         print("Validating API song data...")
 
         # Parse dates and convert to local timezone
-        local_timezone = tzlocal.get_localzone()
-        df["played_at"] = df.apply(lambda row: parse(row["played_at"]).astimezone(local_timezone), axis=1)
-        df["date"] = df['played_at'].apply(lambda x: x.strftime("%Y-%m-%d"))
+        #Old Syntax pre 3.7
+        #local_timezone = tzlocal.get_localzone()
+        #df["played_at"] = df.apply(lambda row: parse(row["played_at"]).astimezone(local_timezone), axis=1)
+        #df["date"] = df['played_at'].apply(lambda x: x.strftime("%Y-%m-%d"))
+
+        current_timezone = "US/Eastern"
+        df['played_at'] = pd.to_datetime(df['played_at'], utc=True)
+        df['played_at'] = df['played_at'].dt.tz_convert(current_timezone)
+        # include the milliseconds
+        df['played_at'] = df["played_at"].dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+        
+        df['date'] = pd.to_datetime(df['played_at']).dt.strftime('%Y-%m-%d')
+
         print("Parsed dates and converted to local timezone.")
 
         # Delete where date != yesterday's date
         today = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday = (today - datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d")
+        
         df.drop(df.loc[df['date'] != yesterday].index, inplace=True)
 
         df.to_csv(r'myhistory.csv', index=False)
